@@ -296,8 +296,8 @@ def camera_task(cam: HuarayCameraController, plc_trigger, plc_result, name, plc_
             if frame is None:
                 raise RuntimeError("No frame")
 
-            if frame.ndim == 2:   # grayscale → BGR
-                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            if frame.ndim == 3 and frame.shape[2] == 3:
+                frame = frame[:, :, ::-1]
 
             date_dir, full_dir = ensure_dirs(base_dir)
             
