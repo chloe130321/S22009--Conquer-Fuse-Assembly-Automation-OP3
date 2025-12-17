@@ -12,6 +12,7 @@ from torchvision import transforms
 from model_setup import get_model
 # from inference import predict_image  # ⭐️ REMOVED (we predict in-memory)
 from camera_controller import HuarayCameraController
+import torch.nn.functional as F #用於計算softmax
 
 # =========================
 # PLC socket
@@ -23,6 +24,9 @@ from camera_controller import HuarayCameraController
 # Cameras — IMV SDK indexes (from your check.py on THIS PC)
 # Adjust index if camera order changes.
 # =========================
+CONFIG_PATH = "config.json"
+DEFAULT_CONF_THRESHOLD = 0.80
+
 cameras = {
     "op3_1": {
         "index": 1,
@@ -46,14 +50,34 @@ cameras = {
     },
 }
 
+def load_config():
+    if not os.path.exists(CONFIG_PATH):
+        print(f"⚠️ Config file {CONFIG_PATH} not found! Using defaults.")
+        return {"confidence_threshold": DEFAULT_CONF_THRESHOLD, "models": {}}
+    
+    try:
+        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+            cfg = json.load(f)
+            print(f"✅ Config loaded: Threshold={cfg.get('confidence_threshold')}")
+            return cfg
+    except Exception as e:
+        print(f"❌ Failed to load config: {e}")
+        return {"confidence_threshold": DEFAULT_CONF_THRESHOLD, "models": {}}
 
-# =========================
-# ConvNeXt configs (single crop per station)
-# =========================
+# 程式啟動時先讀取一次配置
+APP_CONFIG = load_config()
+CONF_THRESHOLD = APP_CONFIG.get("confidence_threshold", DEFAULT_CONF_THRESHOLD)
+MODEL_BASE_DIR = APP_CONFIG.get("model_base_dir", r"C:\3-1_3-3\model")
+
+# 從 config 取得檔名，若無則使用預設值或報錯
+model_name_op3_1 = APP_CONFIG.get("models", {}).get("op3_1", "default_model_1.pth")
+model_name_op3_3 = APP_CONFIG.get("models", {}).get("op3_3", "default_model_2.pth")
+
 CLASSIFY_CFG = {
     "op3_1": {
         "type": "double",
-        "model_path": r"C:\3-1_3-3\model\0821_3-1_convnext_model.pth",
+        # ⭐️ MODIFIED: 使用 os.path.join 組合路徑
+        "model_path": os.path.join(MODEL_BASE_DIR, model_name_op3_1),
         "class_names": ["ok", "ng"],
         "crop_ratio": 0.4,
         "crops": [
@@ -63,7 +87,8 @@ CLASSIFY_CFG = {
     },
     "op3_3": {
         "type": "double",
-        "model_path": r"C:\3-1_3-3\model\0825_3-3_convnext_model.pth",
+        # ⭐️ MODIFIED: 使用 os.path.join 組合路徑
+        "model_path": os.path.join(MODEL_BASE_DIR, model_name_op3_3),
         "class_names": ["ok", "ng"],
         "crop_ratio": 0.5,
         "crops": [
@@ -72,6 +97,8 @@ CLASSIFY_CFG = {
         ],
     },
 }
+
+
 
 
 VAL_TRANSFORM = transforms.Compose([
@@ -157,7 +184,8 @@ def _center_shift_crop(img_bgr: np.ndarray, crop_ratio: float, dx: int, dy: int)
     y1 = max(0, y2 - ch)
     return img_bgr[y1:y2, x1:x2]
 
-def _predict_in_memory(cv2_img_bgr: np.ndarray, model, class_names, transform) -> str:
+def _predict_in_memory(cv2_img_bgr: np.ndarray, model, class_names, transform, threshold: float) -> str:
+    """⭐️ MODIFIED: 新增 threshold 參數"""
     try:
         img_rgb = cv2.cvtColor(cv2_img_bgr, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(img_rgb)
@@ -165,11 +193,29 @@ def _predict_in_memory(cv2_img_bgr: np.ndarray, model, class_names, transform) -
         input_batch = input_tensor.unsqueeze(0)
         device = next(model.parameters()).device
         input_batch = input_batch.to(device)
+        
         with torch.no_grad():
             output = model(input_batch)
-            _, preds = torch.max(output, 1)
-            pred_class = class_names[preds[0]]
+            
+            # ⭐️ MODIFIED: 轉換為機率 (0~1)
+            probs = F.softmax(output, dim=1) 
+            
+            # 取得最大機率與對應的類別索引
+            top_p, top_class_idx = probs.topk(1, dim=1)
+            
+            conf_score = top_p.item()
+            pred_index = top_class_idx.item()
+            pred_class = class_names[pred_index]
+
+            # ⭐️ 信心度判斷邏輯
+            # 如果預測是 OK，但信心度不足，強制轉為 NG (或 unknown)
+            # 如果預測本來就是 NG，信心度低也還是 NG
+            if conf_score < threshold:
+                loginfo("ConvNeXt", f"Low confidence: {conf_score:.4f} < {threshold}. Pred: {pred_class} -> Force NG")
+                return "ng" # 信心不足視為 NG
+            
         return pred_class
+        
     except Exception as e:
         loginfo("ConvNeXt", f"_predict_in_memory failed: {e}")
         return "unknown"
@@ -187,9 +233,16 @@ def classify_frame(camera_name, image_bgr, base_dir, date_dir, base_name):
 
     out = {"camera": camera_name, "crops": [], "final": None}
     results = []
+    
+    # ⭐️ 這裡要使用最新的 CONF_THRESHOLD (如果想要支援熱更新，可以在這裡重新 reload config)
+    current_thresh = CONF_THRESHOLD 
+
     for i, off in enumerate(cfg.get("crops", []), 1):
         crop_img = _center_shift_crop(image_bgr, cfg["crop_ratio"], off["dx"], off["dy"])
-        pred = _predict_in_memory(crop_img, model, names, VAL_TRANSFORM)
+        
+        # ⭐️ MODIFIED: 傳入 current_thresh
+        pred = _predict_in_memory(crop_img, model, names, VAL_TRANSFORM, current_thresh)
+        
         out["crops"].append({"pred": pred})
         results.append(pred)
 

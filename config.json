@@ -1,0 +1,8 @@
+{
+    "confidence_threshold": 0.80,
+    "model_base_dir": "C:\\3-1_3-3\\model",
+    "models": {
+        "op3_1": "best_222222222_20251212_161004.pth",
+        "op3_3": "best_222222222_20251212_161004.pth"
+    }
+}
