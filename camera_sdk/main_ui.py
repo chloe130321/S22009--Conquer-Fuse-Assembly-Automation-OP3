@@ -2,6 +2,7 @@ import sys
 import os
 import json
 import shutil
+import traceback
 import zipfile
 from datetime import datetime
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
@@ -16,7 +17,7 @@ MODEL_BASE_DIR = r"C:\3-1_3-3\model"
 CONFIG_FILE = r"S22009--Conquer-Fuse-Assembly-Automation-OP3\config.json"  # 放在同層目錄即可
 
 # 圖片根目錄 (參照 op3_save_images.py)
-IMG_ROOT_OP3_1 = r"C:\3-1_3-3\OP3-1_pictures"
+IMG_ROOT_OP3_1 = r"C:\G_D_2\S22009--Conquer-Fuse-Assembly-Automation-OP3\picture"
 IMG_ROOT_OP3_3 = r"C:\3-1_3-3\OP3-3_pictures"
 
 class DateRangeDialog(QDialog):
@@ -105,35 +106,61 @@ class SettingsEditor(QWidget):
         self.init_ui()
 
     def load_config(self):
-        """ 讀取 Config，支援新的 models 結構 """
-        default = {
+        print("[Log] 正在讀取設定檔...")
+        
+        # 1. 預設值 (避免檔案不存在時程式崩潰)
+        config = {
             "confidence_threshold": 0.80, 
-            "model_base_dir": MODEL_BASE_DIR,
-            "models": {
-                "op3_1": "", 
-                "op3_3": ""
-            }
+            "model_filename_23": "", 
+            "model_filename_25": ""
         }
         
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    # 簡單的合併邏輯，確保 key 存在
-                    if "models" not in data:
-                        data["models"] = {}
-                    return data
-            except:
-                return default
-        return default
+                    saved_data = json.load(f)
+                    # ★ 核心邏輯：把硬碟裡的舊資料合併進來
+                    # 這樣如果硬碟裡有模型設定，這裡就會讀進來，不會是空白的
+                    config.update(saved_data)
+                    print(f"[Success] 設定檔讀取成功: {config}")
+            except Exception as e:
+                print(f"❌ 設定檔讀取失敗 (將使用預設值): {e}")
+                # 注意：如果讀取失敗，config 會保持預設值 (空白模型)，
+                # 這時候如果你按儲存，確實會把空白存進去。
+                # 但通常只要 config.json 沒壞，這步都會成功。
+        else:
+            print(f"[Warning] 找不到設定檔 {CONFIG_FILE}，將使用預設值。")
+            
+        return config
 
     def save_config(self):
+        # ★ 安全加強版儲存邏輯 ★
+        # 我們不直接把 self.config 覆蓋過去，而是先讀一次最新的檔案，再合併我們的修改
+        # 這樣可以避免「不小心刪掉其他設定」或「覆蓋掉我們沒動到的欄位」
+        
         try:
-            # 確保 model_base_dir 被寫入
-            self.config["model_base_dir"] = MODEL_BASE_DIR
+            final_data = {}
+            # 1. 先嘗試讀取硬碟上現有的檔案
+            if os.path.exists(CONFIG_FILE):
+                try:
+                    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                        final_data = json.load(f)
+                except:
+                    # 如果讀取失敗，就用空的字典，稍後會被 self.config 補上
+                    pass
+            
+            # 2. 把目前介面上的設定 (self.config) 更新進去
+            # 這時候 self.config 裡面已經包含了：
+            #   (a) 剛啟動時讀到的舊模型 (如果你沒動)
+            #   (b) 你剛剛拉動的新信心度
+            final_data.update(self.config)
+
+            # 3. 寫入檔案
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.config, f, indent=4, ensure_ascii=False)
-            QMessageBox.information(self, "成功", "✅ 設定已儲存！\n請重新啟動檢測程式以生效。")
+                json.dump(final_data, f, indent=4, ensure_ascii=False)
+            
+            QMessageBox.information(self, "成功", "✅ 設定已儲存！\n請重新啟動 AOI 主程式以生效。")
+            
         except Exception as e:
             QMessageBox.critical(self, "錯誤", f"儲存失敗: {e}")
 
@@ -233,65 +260,69 @@ class SettingsEditor(QWidget):
         
         layout.addLayout(h_layout)
 
-    def import_model(self, model_key, line_edit):
-        file_path, _ = QFileDialog.getOpenFileName(self, "選擇模型檔案", "", "Model Files (*.pth)")
-        if not file_path:
+    def import_model(self, config_key, line_edit):
+        # 修正後的檔案選擇視窗 (避免之前的 TypeError)
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, 
+            "選擇新模型檔案",       
+            "",                   
+            "Model Files (*.pth)" 
+        )
+        
+        # ★ 安全機制：
+        # 如果你按取消 (file_path 為空)，程式直接結束，什麼都不改。
+        # 你的舊設定 (self.config[config_key]) 會維持原樣。
+        if not file_path: 
             return
 
         try:
             filename = os.path.basename(file_path)
             target_path = os.path.join(MODEL_BASE_DIR, filename)
             
-            # 如果檔案不在目標資料夾，就複製過去
             if os.path.abspath(file_path) != os.path.abspath(target_path):
                 shutil.copy2(file_path, target_path)
-                msg = f"已複製檔案至:\n{target_path}"
+                msg = f"已將檔案複製到系統目錄:\n{filename}"
             else:
-                msg = f"已選擇現有檔案:\n{filename}"
+                msg = f"已選擇系統目錄內的檔案:\n{filename}"
 
-            # 更新 Config
-            if "models" not in self.config:
-                self.config["models"] = {}
-            self.config["models"][model_key] = filename
-            
+            self.config[config_key] = filename
             line_edit.setText(filename)
             QMessageBox.information(self, "匯入成功", msg)
             
         except Exception as e:
-            QMessageBox.critical(self, "錯誤", f"檔案處理失敗: {e}")
+            QMessageBox.critical(self, "錯誤", f"檔案複製失敗: {e}")
 
     # ==================== ⭐️ 關鍵修改：簡化的資料夾掃描邏輯 ====================
     def scan_images_by_date(self, root_dir, start_date, end_date):
-        """
-        掃描邏輯修正：直接掃描 root_dir 下的日期資料夾
-        結構: root_dir / YYYY-MM-DD / *.png
-        """
         matched_files = []
+        print(f"[Log] 開始掃描目錄: {root_dir}")
         
         if not os.path.exists(root_dir):
+            print("[Error] 目錄不存在")
             return matched_files
 
-        # 直接遍歷第一層 (預期是日期資料夾)
-        for folder_name in os.listdir(root_dir):
-            folder_path = os.path.join(root_dir, folder_name)
-            
-            if not os.path.isdir(folder_path):
-                continue
-            
-            # 檢查資料夾名稱是否為日期
-            try:
-                folder_date = datetime.strptime(folder_name, "%Y-%m-%d").date()
+        try:
+            for file_name in os.listdir(root_dir):
+                file_path = os.path.join(root_dir, file_name)
                 
-                # 判斷日期範圍
-                if start_date <= folder_date <= end_date:
-                    # 收集該資料夾內的所有圖片
-                    for file in os.listdir(folder_path):
-                        if file.lower().endswith(('.jpg', '.png', '.jpeg', '.bmp')):
-                            matched_files.append(os.path.join(folder_path, file))
-                            
-            except ValueError:
-                # 資料夾名稱不是日期 (例如可能是 'temp' 或其他)，跳過
-                continue
+                if not os.path.isfile(file_path):
+                    continue
+                
+                if not file_name.lower().endswith(('.jpg', '.png', '.jpeg', '.bmp')):
+                    continue
+
+                try:
+                    date_part = file_name[:8] 
+                    file_date = datetime.strptime(date_part, "%Y%m%d").date()
+                    
+                    if start_date <= file_date <= end_date:
+                        matched_files.append(file_path)
+                except ValueError:
+                    continue
+                    
+        except Exception as e:
+            print(f"[Error] 掃描過程出錯: {e}")
+            traceback.print_exc()
         
         return matched_files
 
