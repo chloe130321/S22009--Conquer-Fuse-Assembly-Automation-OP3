@@ -76,24 +76,26 @@ model_name_op3_3 = APP_CONFIG.get("models", {}).get("op3_3", "default_model_2.pt
 CLASSIFY_CFG = {
     "op3_1": {
         "type": "double",
-        # ⭐️ MODIFIED: 使用 os.path.join 組合路徑
         "model_path": os.path.join(MODEL_BASE_DIR, model_name_op3_1),
         "class_names": ["ok", "ng"],
-        "crop_ratio": 0.4,
+        # "crop_ratio": 0.4,  <-- 刪除這行，不需要了
         "crops": [
-            {"dx": 200, "dy": 200},
-            {"dx": -200, "dy": -450},
+            # 第一個裁切框 (例如：左邊的物件)
+            {"x": 250, "y": 580, "w": 180, "h": 130}, 
+            # 第二個裁切框 (例如：右邊的物件)
+            {"x": 680, "y": 410, "w": 160, "h": 130},
         ],
     },
     "op3_3": {
         "type": "double",
-        # ⭐️ MODIFIED: 使用 os.path.join 組合路徑
         "model_path": os.path.join(MODEL_BASE_DIR, model_name_op3_3),
         "class_names": ["ok", "ng"],
-        "crop_ratio": 0.5,
+        # "crop_ratio": 0.5, <-- 刪除這行
         "crops": [
-            {"dx": -150, "dy": 200},
-            {"dx": 130,  "dy": -250},
+            # 第一個裁切框
+            {"x": 340, "y": 580, "w": 170, "h": 130},
+            # 第二個裁切框
+            {"x": 790, "y": 700, "w": 190, "h": 140},
         ],
     },
 }
