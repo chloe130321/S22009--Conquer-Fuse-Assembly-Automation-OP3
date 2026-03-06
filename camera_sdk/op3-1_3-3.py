@@ -115,17 +115,40 @@ VAL_TRANSFORM = transforms.Compose([
 # =========================
 _MODEL_CACHE = {}
 for cam, cfg in CLASSIFY_CFG.items():
-    path = cfg["model_path"]; names = cfg["class_names"]
+    path = cfg["model_path"]
+    names = cfg["class_names"]
     try:
-        model = get_model(num_classes=len(names))
-        state = torch.load(path, map_location="cuda:0" if torch.cuda.is_available() else "cpu")
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        
+        # 1. 先讀取權重檔 (State Dict)
+        state = torch.load(path, map_location=device)
+        
+        # 2. 建立基礎 ConvNeXt 模型
+        model = models.convnext_tiny(weights=None)
+        num_ftrs = model.classifier[2].in_features
+        
+        # 3. 智慧判斷結構：檢查權重檔是否包含 Dropout 層的特徵 ('classifier.2.1')
+        has_dropout_layer = any("classifier.2.1" in k for k in state.keys())
+        
+        if has_dropout_layer:
+            loginfo("ConvNeXtInit", f"[{cam}] 偵測到新版模型結構 (含 Dropout)")
+            model.classifier[2] = nn.Sequential(
+                nn.Dropout(0.5),
+                nn.Linear(num_ftrs, len(names))
+            )
+        else:
+            loginfo("ConvNeXtInit", f"[{cam}] 偵測到舊版模型結構 (不含 Dropout)")
+            model.classifier[2] = nn.Linear(num_ftrs, len(names))
+            
+        # 4. 載入權重並設為評估模式
         model.load_state_dict(state)
+        model.to(device)
         model.eval()
+        
         _MODEL_CACHE[path] = model
         loginfo("ConvNeXtInit", f"[{cam}] Loaded model: {path}")
     except Exception as e:
         loginfo("ConvNeXtInit", f"[{cam}] FAILED to load {path}: {e}")
-
 # =========================
 # Helpers
 # =========================
